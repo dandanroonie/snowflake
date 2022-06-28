@@ -1,0 +1,92 @@
+USE ROLE ACCOUNTADMIN;
+-- reset by dropping WH
+drop warehouse IF EXISTS team_1_WH; 
+
+-- one database
+USE DATABASE snowflake_sample_data;
+-- out of the box sample data - reproduce this yourself 
+USE SCHEMA snowflake_sample_data.tpcds_sf10tcl;
+
+--USE WAREHOUSE none;
+-- if you want to try this on citibike data
+--select count(*) from citibike.public.trips;
+
+-- this can be from a public account. 
+--select count(*) from citibike.demo.trips;
+-- Count is in the metadata layer - so summary statistics don't need computute cluster. 
+select count(*) from item;
+
+
+
+--
+-- snowflake_sample_data.tpcds_sf10tcl;
+
+-- no compute cluster running
+-- still don't need compute for Show tables or Desc
+SHOW TABLES;
+DESC TABLE CALL_CENTER;
+
+-- show the interface: https://app.snowflake.com/us-east-1/coa26304/compute/warehouses?status=all&size=all
+-- assume is data engineering team
+-- not all transactions are continuous - since it spins up. 
+-- imagine how long this will take in redshift. 
+-- don't pay to spin it up - consumption is charged when used. 
+-- for databricks this would take minutes and you would need a buffer - so that is similar to typical on-prem infrastucture. 
+CREATE OR REPLACE WAREHOUSE team_1_wh WITH 
+    WAREHOUSE_SIZE = 'XSMALL' WAREHOUSE_TYPE = 'STANDARD' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE 
+    MIN_CLUSTER_COUNT = 1 MAX_CLUSTER_COUNT = 1 SCALING_POLICY = 'STANDARD';
+
+-- assume is BI team
+CREATE OR REPLACE WAREHOUSE team_2_wh WITH 
+    WAREHOUSE_SIZE = 'XSMALL' WAREHOUSE_TYPE = 'STANDARD' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE 
+    MIN_CLUSTER_COUNT = 1 MAX_CLUSTER_COUNT = 1 SCALING_POLICY = 'STANDARD';
+
+-- turn on cached result
+-- just want to demonstrate how the cache is used across the clusters. 
+-- if the data doesn't change - the cache is available for 24 hours. 
+-- This is set by default - but showing it again to be clear. 
+-- cold cache is in S3
+-- warm is in the SSD of the virtual warehouse. 
+-- to reset it... 
+ALTER SESSION SET USE_CACHED_RESULT = false;
+
+ALTER SESSION SET USE_CACHED_RESULT = true;
+
+
+USE WAREHOUSE team_1_wh;
+
+-- If the query is cold 
+-- TPC-DS_query12
+select  i_item_id,i_item_desc,i_category,i_class,i_current_price,sum(ws_ext_sales_price) as itemrevenue,sum(ws_ext_sales_price)*100/sum(sum(ws_ext_sales_price)) over (partition by i_class) as revenueratio
+from web_sales,item,date_dim
+where ws_item_sk = i_item_sk 
+    and i_category in ('Women','Sports')
+    --and i_current_price = 2.99
+    and ws_sold_date_sk = d_date_sk
+    and d_date between cast('1999-04-17' as date) 
+    and dateadd(day,30,to_date('1999-04-17'))
+group by i_item_id,i_item_desc,i_category,i_class,i_current_price
+order by i_category,i_class,i_item_id,i_item_desc,revenueratio
+limit 100;
+
+-- this shows a 2nd warehouse using the same cache 
+USE WAREHOUSE team_2_wh;
+-- run it again -> uses cached result
+
+-- turn off the cached result
+ALTER SESSION SET USE_CACHED_RESULT = false;
+-- run it again -> read from local SSD and reach remote only if it is not in local SSD - check Query History
+
+-- response time was not good enough, let's size up - bigger compute cluster
+-- this will make it run quicker since it's using a bigger environment
+alter warehouse team_1_wh set warehouse_size=small; -- show warehouses view
+alter warehouse team_2_wh set warehouse_size=small; -- show warehouses view
+-- re-run TPC-DS_query12
+
+USE WAREHOUSE team_2_wh;
+ALTER SESSION SET USE_CACHED_RESULT = true;
+-- re-run TPC-DS_query12 -> read from cached result even that was executed in a different cluster - cached result is shared
+
+alter warehouse team_2_wh set warehouse_size=small;
+ALTER SESSION SET USE_CACHED_RESULT = false;
+-- re-run TPC-DS_query12 to show response time is better when warehouse is bigger
