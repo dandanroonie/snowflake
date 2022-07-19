@@ -1,0 +1,60 @@
+USE WAREHOUSE team_2_wh;
+ALTER SESSION SET USE_CACHED_RESULT = true;
+use database snowflake_sample_data;
+
+
+-- DATA PROTECTION and CLONING
+-- using unique features of snowflake 
+-- Drop table by accident 
+use schema citibike.public;
+show tables like 'TRIPS%';
+-- note rows= 95,400,304, bytes = 2008044032
+-- could have also been drop database 
+drop table trips;
+
+show tables like 'trips%';
+-- table is gone
+-- Using Timetravel ppl can keep their vacations 
+
+undrop table trips;
+show tables like 'trips%';
+-- trips table is back!!!
+
+--Clone a database and all objects within the database at its current state:
+-- This could be for an complete new environment for unit testing, Data science.
+-- This has 100s of millions of records. 
+-- Availalbe in Seconds
+-- Storage is only taken by new data
+
+create or replace database citibike_clone clone citibike;
+--Same can be done with schema
+show databases like 'CITIBIKE%';
+
+
+--Clone a table at its current state:
+use warehouse demo_wh;
+create or replace table trips_clone clone trips;
+show tables like 'TRIPS%';
+-- trips_clone is there
+-- you'll see the counts are the same - ~100M
+select count(*) from trips;
+select count(*) from trips_clone;
+-- same number of rows
+
+
+-- Clone a table as it existed exactly at the date and time of the specified timestamp:
+-- create or replace table trips_clone_restore clone trips at (timestamp => to_timestamp_tz('04/05/2013 01:02:03', 'mm/dd/yyyy hh24:mi:ss'));
+
+-- Watch inserting 5M records in <5 sec with an XS - the smallest there is.
+insert into trips_clone select * from trips limit 5000000;
+select count(*) from trips_clone;
+
+--Clone a table as it existed immediately before the execution of the specified statement (i.e. query ID):
+-- OOPS I shouldn't have added those records
+create or replace table trips_clone_restore clone trips_clone before (statement => last_query_id());
+-- create or replace table trips_clone_restore clone trips_clone before (statement => $query_id);
+
+select count(*) from trips_clone_restore;
+
+-- as you can see those 5000000 are gone and table is restore as before that insert statement
+
