@@ -1,0 +1,106 @@
+/*
+Archival/Purge strategies:
+Example 
+Keep data on Snowflake for 3 years - purge anything older than that
+Archive data older than 90 days
+
+https://github.com/dandanroonie/archival/edit/master/unload-and-snowpipe-demo.sql
+
+Forked from Youtube Demo of this script
+    https://youtu.be/vJvQrqGAIW0
+
+Reference
+    https://docs.snowflake.com/en/user-guide/data-pipelines-intro.html#workflow
+    https://quickstarts.snowflake.com/guide/getting_started_with_streams_and_tasks/index.html?index=..%2F..index#0
+    https://interworks.com/blog/hcalder/2020/01/23/snowpipe-101/ 
+    Another example of offloading
+    https://github.com/allen-wong-tech/snowflake/blob/master/unload-and-snowpipe-demo.sql
+
+AWS Notes:
+    S3 | Properties | Events | Add notification | All object create events | Send to SQS Queue
+
+Demo
+    Unload to Stage (S3)
+    Create SnowPipe
+    Verify Data Automatically Pipes In via Simple Queue Service (SQS)
+
+Benefits
+    Keep Data on Snowflake as a single source of truth up to 90 days
+    Archival Thereafter
+    Stream Data in Serverless with per-second billing for low TCO and near-zero maintenance
+    SnowPipe is a wrapper around Copy Into so easy to setup
+    Enable near-real-time analytics on Snowflake
+    
+*/
+--set context
+
+CREATE or REPLACE DATABASE archival;
+USE DATABASE archival;
+CREATE or REPLACE SCHEMA archival;
+USE SCHEMA archival;
+USE ROLE ACCOUNTADMIN;
+
+CREATE OR REPLACE WAREHOUSE team_1_wh WITH 
+    WAREHOUSE_SIZE = 'XSMALL' WAREHOUSE_TYPE = 'STANDARD' AUTO_SUSPEND = 60 AUTO_RESUME = TRUE 
+    MIN_CLUSTER_COUNT = 1 MAX_CLUSTER_COUNT = 1 SCALING_POLICY = 'STANDARD';
+
+-- could use role sysadmin; 
+-- don't need a table to hold the archive since it'll be created by the copy to s3 bucket
+
+CREATE OR REPLACE TABLE Blotter (
+   TDate DATE,
+   TraderID INTEGER,
+   Proceeds INTEGER
+);
+
+-- Fill in Some data that is either 3 days old or 90-93 days old. 
+INSERT INTO Blotter
+    (Tdate,TraderID, Proceeds)
+SELECT CURRENT_DATE() - (UNIFORM(0, 2, RANDOM() )+ 90 *(UNIFORM(0, 1, RANDOM() ))) AS Tdate,
+    UNIFORM(1, 10, RANDOM() ) as TraderID,
+    UNIFORM(1, 100, RANDOM() ) as Proceeds
+FROM TABLE(GENERATOR(rowcount => 100) ) ;
+
+-- Providing an orderdate is typically how 
+CREATE OR REPLACE TABLE Blotter AS
+    SELECT * FROM Blotter ORDER BY tdate ;
+    
+
+SELECT * FROM Blotter;
+
+CREATE OR REPLACE TRANSIENT TABLE Blotter_inc_Archive AS
+    SELECT * FROM Blotter where tdate < current_date()-89;
+Select * FROM Blotter_inc_Archive;
+
+DELETE FROM Blotter WHERE tdate < current_date()-89;
+
+-- https://docs.snowflake.com/en/sql-reference/sql/copy-into-location.html
+--Export to cloud storage 
+
+    copy into 's3://Blotter/2023/b.csv' from 
+        (select * from Blotter_inc_Archive)
+        max_file_size = 10000
+        overwrite = false; 
+        
+    --verify files unloaded @ = stage
+    ls 's3://Blotter/$current_date()'; 
+    
+    -- another example writing out to a stage:
+    
+    copy into @stageofficial_171/nums_pipesource/ModifyEachTime1 from 
+        (select * from pipedata)
+        max_file_size = 10000
+        overwrite = false; 
+        
+    --verify files unloaded @ = stage
+    ls @stageofficial_171/nums_pipesource/;
+
+
+ALTER warehouse IF EXISTS TEAM_1_WH suspend;
+DROP TABLE IF EXISTS Blotter_inc_Archive;
+
+
+--FULL reset demo
+
+DROP TABLE IF EXISTS Blotter;
+-- FINISHED
